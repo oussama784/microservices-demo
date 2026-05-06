@@ -1,0 +1,101 @@
+name: DevOps CI/CD Pipeline — PFE Oussama Chagma
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # -------------------------------------------------------
+  # Stage 1: Security Scan with Trivy
+  # -------------------------------------------------------
+  trivy-scan:
+    name: 🔒 Security Scan (Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+
+      - name: Run Trivy scan on frontend image
+        run: |
+          trivy image gcr.io/google-samples/microservices-demo/frontend:v0.10.1 \
+            --severity HIGH,CRITICAL \
+            --exit-code 0 \
+            --format table
+        continue-on-error: true
+
+      - name: Run Trivy scan on kubernetes manifests
+        run: |
+          trivy config ./release/kubernetes-manifests.yaml \
+            --severity HIGH,CRITICAL \
+            --exit-code 0
+        continue-on-error: true
+
+  # -------------------------------------------------------
+  # Stage 2: Code Quality with SonarQube
+  # -------------------------------------------------------
+  sonarqube-scan:
+    name: 📊 Code Quality (SonarQube)
+    runs-on: ubuntu-latest
+    needs: trivy-scan
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Install sonar-scanner
+        run: |
+          wget -q https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-6.2.1.4610-linux-x64.zip
+          unzip -q sonar-scanner-cli-6.2.1.4610-linux-x64.zip
+          sudo mv sonar-scanner-6.2.1.4610-linux-x64 /opt/sonar-scanner
+          sudo ln -sf /opt/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner
+
+      - name: Run SonarQube analysis
+        run: |
+          sonar-scanner \
+            -Dsonar.projectKey=microservices-demo \
+            -Dsonar.sources=. \
+            -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
+            -Dsonar.token=${{ secrets.SONAR_TOKEN }} \
+            -Dsonar.exclusions="**/*.java,**/vendor/**,**/*.pb.go,**/*.js,**/*.ts,**/*.css"
+        continue-on-error: true
+
+  # -------------------------------------------------------
+  # Stage 3: Deploy to Kubernetes
+  # -------------------------------------------------------
+  deploy:
+    name: 🚀 Deploy to Kubernetes
+    runs-on: ubuntu-latest
+    needs: sonarqube-scan
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.33.5'
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 --decode > ~/.kube/config
+
+      - name: Verify cluster connection
+        run: |
+          kubectl get nodes
+
+      - name: Deploy Online Boutique
+        run: |
+          kubectl apply -f ./release/kubernetes-manifests.yaml
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods
+          kubectl get service frontend-external
