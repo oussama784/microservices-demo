@@ -1,4 +1,4 @@
-name: CI/CD Pipeline of Oussama
+name: CI/CD Pipeline PFE Oussama Chagma
 
 on:
   push:
@@ -7,19 +7,12 @@ on:
     branches: [ main ]
 
 jobs:
-  # -------------------------------------------------------
-  # Stage 1: Security Scan with Trivy
-  # -------------------------------------------------------
   trivy-scan:
-    name: Security Scan (Trivy)
-    runs-on: ubuntu-latest
+    name: Security Scan(Trivy)
+    runs-on: self-hosted
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-
-      - name: Install Trivy
-        run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
 
       - name: Scan Online Boutique frontend image
         run: |
@@ -27,7 +20,6 @@ jobs:
             --severity HIGH,CRITICAL \
             --exit-code 0 \
             --format table
-        continue-on-error: true
 
       - name: Scan Kubernetes manifests
         run: |
@@ -36,12 +28,9 @@ jobs:
             --exit-code 0
         continue-on-error: true
 
-  # -------------------------------------------------------
-  # Stage 2: Code Quality with SonarQube
-  # -------------------------------------------------------
   sonarqube-scan:
-    name: Code Quality (SonarQube)
-    runs-on: ubuntu-latest
+    name: Code Quality(SonarQube)
+    runs-on: self-hosted
     needs: trivy-scan
     steps:
       - name: Checkout code
@@ -49,53 +38,33 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install sonar-scanner
-        run: |
-          wget -q https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-6.2.1.4610-linux-x64.zip
-          unzip -q sonar-scanner-cli-6.2.1.4610-linux-x64.zip
-          sudo mv sonar-scanner-6.2.1.4610-linux-x64 /opt/sonar-scanner
-          sudo ln -sf /opt/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner
-
       - name: Run SonarQube analysis
         run: |
           sonar-scanner \
             -Dsonar.projectKey=microservices-demo \
             -Dsonar.sources=. \
-            -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
+            -Dsonar.host.url=http://localhost:9000 \
             -Dsonar.token=${{ secrets.SONAR_TOKEN }} \
-            -Dsonar.exclusions="**/*.java,**/vendor/**,**/*.pb.go,**/*.js,**/*.ts,**/*.css"
-        continue-on-error: true
+            -Dsonar.exclusions="**/*.java,**/vendor/**,**/*.pb.go,**/*.js,**/*.ts,**/*.css" \
+            -Dsonar.java.binaries=.
 
-  # -------------------------------------------------------
-  # Stage 3: Deploy to Kubernetes
-  # -------------------------------------------------------
   deploy:
     name: Deploy to Kubernetes
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: sonarqube-scan
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Validate Kubernetes manifests
+      - name: Verify cluster connection
         run: |
-          # Validate manifest syntax without connecting to cluster
-          cat ./release/kubernetes-manifests.yaml | grep -c "kind:" | xargs -I{} echo " {} Kubernetes resources validated"
+          kubectl get nodes
 
-      - name: Deployment summary
+      - name: Deploy Online Boutique
         run: |
-          echo "================================================"
-          echo " Security scan: Trivy completed"
-          echo " Code quality: SonarQube passed"
-          echo " Manifests: Valid Kubernetes YAML"
-          echo " Target: Azure Stack Hub dc2"
-          echo " Cluster: Kubernetes v1.33.5"
-          echo " Namespace: default"
-          echo " Application: Online Boutique (11 microservices)"
-          echo " Network plugin: Calico CNI"
-          echo " Monitoring: Prometheus + Grafana"
-          echo "================================================"
-          echo "NOTE: Actual deployment runs on private cluster"
-          echo "A self-hosted runner on the management VM would"
-          echo "complete the deployment to Azure Stack Hub dc2"
-          echo "================================================"
+          kubectl apply -f ./release/kubernetes-manifests.yaml
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods
+          kubectl get service frontend-external
